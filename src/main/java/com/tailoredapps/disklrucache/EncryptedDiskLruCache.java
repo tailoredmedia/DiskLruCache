@@ -12,9 +12,13 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * --------
+ * 
+ * FILE MODIFIED 2017 Tailored Media GmbH
  */
 
-package com.jakewharton.disklrucache;
+package com.tailoredapps.disklrucache;
 
 import java.io.BufferedWriter;
 import java.io.Closeable;
@@ -30,6 +34,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -79,17 +84,21 @@ import java.util.regex.Pattern;
  * observe the value at the time that {@link #get} was called. Updates and
  * removals after the call do not impact ongoing reads.
  *
+ * <p>The data stored in the cache is encrypted via an {@link EncryptedFileStreamProvider}.
+ * However, the journal file and its contents are not stored encrypted
+ * (i.e. entry keys are not encrypted).
+ *
  * <p>This class is tolerant of some I/O errors. If files are missing from the
  * filesystem, the corresponding entries will be dropped from the cache. If
  * an error occurs while writing a cache value, the edit will fail silently.
  * Callers should handle other problems by catching {@code IOException} and
  * responding appropriately.
  */
-public final class DiskLruCache implements Closeable {
+public final class EncryptedDiskLruCache implements Closeable {
   static final String JOURNAL_FILE = "journal";
   static final String JOURNAL_FILE_TEMP = "journal.tmp";
   static final String JOURNAL_FILE_BACKUP = "journal.bkp";
-  static final String MAGIC = "libcore.io.DiskLruCache";
+  static final String MAGIC = "libcore.io.EncryptedDiskLruCache";
   static final String VERSION_1 = "1";
   static final long ANY_SEQUENCE_NUMBER = -1;
   static final String STRING_KEY_PATTERN = "[a-z0-9_-]{1,120}";
@@ -102,7 +111,7 @@ public final class DiskLruCache implements Closeable {
     /*
      * This cache uses a journal file named "journal". A typical journal file
      * looks like this:
-     *     libcore.io.DiskLruCache
+     *     libcore.io.EncryptedDiskLruCache
      *     1
      *     100
      *     2
@@ -117,7 +126,7 @@ public final class DiskLruCache implements Closeable {
      *     READ 3400330d1dfc7f3f7f4b8d4d803dfcf6
      *
      * The first five lines of the journal form its header. They are the
-     * constant string "libcore.io.DiskLruCache", the disk cache's version,
+     * constant string "libcore.io.EncryptedDiskLruCache", the disk cache's version,
      * the application's version, the value count, and a blank line.
      *
      * Each of the subsequent lines in the file is a record of the state of a
@@ -139,6 +148,7 @@ public final class DiskLruCache implements Closeable {
      * it exists when the cache is opened.
      */
 
+  private final EncryptedFileStreamProvider encryptedFileStreamProvider;
   private final File directory;
   private final File journalFile;
   private final File journalFileTmp;
@@ -164,7 +174,7 @@ public final class DiskLruCache implements Closeable {
       new ThreadPoolExecutor(0, 1, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
   private final Callable<Void> cleanupCallable = new Callable<Void>() {
     public Void call() throws Exception {
-      synchronized (DiskLruCache.this) {
+      synchronized (EncryptedDiskLruCache.this) {
         if (journalWriter == null) {
           return null; // Closed.
         }
@@ -178,8 +188,9 @@ public final class DiskLruCache implements Closeable {
     }
   };
 
-  private DiskLruCache(File directory, int appVersion, int valueCount, long maxSize) {
+  private EncryptedDiskLruCache(File directory, EncryptedFileStreamProvider encryptedFileStreamProvider, int appVersion, int valueCount, long maxSize) {
     this.directory = directory;
+    this.encryptedFileStreamProvider = encryptedFileStreamProvider;
     this.appVersion = appVersion;
     this.journalFile = new File(directory, JOURNAL_FILE);
     this.journalFileTmp = new File(directory, JOURNAL_FILE_TEMP);
@@ -197,13 +208,17 @@ public final class DiskLruCache implements Closeable {
    * @param maxSize the maximum number of bytes this cache should use to store
    * @throws IOException if reading or writing the cache directory fails
    */
-  public static DiskLruCache open(File directory, int appVersion, int valueCount, long maxSize)
-      throws IOException {
+  public static EncryptedDiskLruCache open(File directory, EncryptedFileStreamProvider encryptedFileStreamProvider, int appVersion, int valueCount, long maxSize)
+      throws GeneralSecurityException, IOException {
     if (maxSize <= 0) {
       throw new IllegalArgumentException("maxSize <= 0");
     }
     if (valueCount <= 0) {
       throw new IllegalArgumentException("valueCount <= 0");
+    }
+
+    if(encryptedFileStreamProvider == null) {
+      throw new IllegalArgumentException("encryptedFileStreamProvider is null");
     }
 
     // If a bkp file exists, use it instead.
@@ -219,7 +234,7 @@ public final class DiskLruCache implements Closeable {
     }
 
     // Prefer to pick up where we left off.
-    DiskLruCache cache = new DiskLruCache(directory, appVersion, valueCount, maxSize);
+    EncryptedDiskLruCache cache = new EncryptedDiskLruCache(directory, encryptedFileStreamProvider, appVersion, valueCount, maxSize);
     if (cache.journalFile.exists()) {
       try {
         cache.readJournal();
@@ -227,7 +242,7 @@ public final class DiskLruCache implements Closeable {
         return cache;
       } catch (IOException journalIsCorrupt) {
         System.out
-            .println("DiskLruCache "
+            .println("EncryptedDiskLruCache "
                 + directory
                 + " is corrupt: "
                 + journalIsCorrupt.getMessage()
@@ -238,12 +253,12 @@ public final class DiskLruCache implements Closeable {
 
     // Create a new empty cache.
     directory.mkdirs();
-    cache = new DiskLruCache(directory, appVersion, valueCount, maxSize);
+    cache = new EncryptedDiskLruCache(directory, encryptedFileStreamProvider, appVersion, valueCount, maxSize);
     cache.rebuildJournal();
     return cache;
   }
 
-  private void readJournal() throws IOException {
+  private void readJournal() throws IOException, GeneralSecurityException {
     StrictLineReader reader = new StrictLineReader(new FileInputStream(journalFile), Util.US_ASCII);
     try {
       String magic = reader.readLine();
@@ -349,7 +364,7 @@ public final class DiskLruCache implements Closeable {
    * Creates a new journal that omits redundant information. This replaces the
    * current journal if it exists.
    */
-  private synchronized void rebuildJournal() throws IOException {
+  private synchronized void rebuildJournal() throws IOException, GeneralSecurityException {
     if (journalWriter != null) {
       journalWriter.close();
     }
@@ -426,9 +441,9 @@ public final class DiskLruCache implements Closeable {
     InputStream[] ins = new InputStream[valueCount];
     try {
       for (int i = 0; i < valueCount; i++) {
-        ins[i] = new FileInputStream(entry.getCleanFile(i));
+        ins[i] = encryptedFileStreamProvider.getInputStream(entry.getCleanFile(i));
       }
-    } catch (FileNotFoundException e) {
+    } catch (Exception e) {
       // A file must have been deleted manually!
       for (int i = 0; i < valueCount; i++) {
         if (ins[i] != null) {
@@ -693,7 +708,7 @@ public final class DiskLruCache implements Closeable {
      * is in progress.
      */
     public Editor edit() throws IOException {
-      return DiskLruCache.this.edit(key, sequenceNumber);
+      return EncryptedDiskLruCache.this.edit(key, sequenceNumber);
     }
 
     /** Returns the unbuffered stream with the value for {@code index}. */
@@ -742,7 +757,7 @@ public final class DiskLruCache implements Closeable {
      * or null if no value has been committed.
      */
     public InputStream newInputStream(int index) throws IOException {
-      synchronized (DiskLruCache.this) {
+      synchronized (EncryptedDiskLruCache.this) {
         if (entry.currentEditor != this) {
           throw new IllegalStateException();
         }
@@ -750,8 +765,8 @@ public final class DiskLruCache implements Closeable {
           return null;
         }
         try {
-          return new FileInputStream(entry.getCleanFile(index));
-        } catch (FileNotFoundException e) {
+          return encryptedFileStreamProvider.getInputStream(entry.getCleanFile(index));
+        } catch (Exception e) {
           return null;
         }
       }
@@ -779,7 +794,7 @@ public final class DiskLruCache implements Closeable {
                 + "be greater than 0 and less than the maximum value count "
                 + "of " + valueCount);
       }
-      synchronized (DiskLruCache.this) {
+      synchronized (EncryptedDiskLruCache.this) {
         if (entry.currentEditor != this) {
           throw new IllegalStateException();
         }
@@ -787,15 +802,15 @@ public final class DiskLruCache implements Closeable {
           written[index] = true;
         }
         File dirtyFile = entry.getDirtyFile(index);
-        FileOutputStream outputStream;
+        OutputStream outputStream;
         try {
-          outputStream = new FileOutputStream(dirtyFile);
-        } catch (FileNotFoundException e) {
+          outputStream = encryptedFileStreamProvider.getOutputStream(dirtyFile);
+        } catch (Exception e) {
           // Attempt to recreate the cache directory.
           directory.mkdirs();
           try {
-            outputStream = new FileOutputStream(dirtyFile);
-          } catch (FileNotFoundException e2) {
+            outputStream = encryptedFileStreamProvider.getOutputStream(dirtyFile);
+          } catch (Exception e2) {
             // We are unable to recover. Silently eat the writes.
             return NULL_OUTPUT_STREAM;
           }

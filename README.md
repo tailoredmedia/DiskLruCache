@@ -11,6 +11,8 @@ be exclusive to the cache; the cache may delete or overwrite files from its
 directory. It is an error for multiple processes to use the same cache
 directory at the same time.
 
+The data stored in the cache is encrypted via an `EncryptedFileStreamProvider`. However, the journal file and its contents are not stored encrypted (i.e. entry keys are not encrypted).
+
 This cache limits the number of bytes that it will store on the filesystem.
 When the number of stored bytes exceeds the limit, the cache will remove
 entries in the background until the limit is satisfied. The limit is not
@@ -44,34 +46,10 @@ appropriately.
 *Note: This implementation specifically targets Android compatibility.*
 
 
-
-Download
-========
-
-Download [the latest .jar][jar] or grab via Maven:
-```xml
-<dependency>
-  <groupId>com.jakewharton</groupId>
-  <artifactId>disklrucache</artifactId>
-  <version>2.0.2</version>
-</dependency>
-```
-or Gradle:
-```groovy
-compile 'com.jakewharton:disklrucache:2.0.2'
-```
-
-Snapshots of the development version are available in [Sonatype's `snapshots` repository][snap].
-
-If you would like to compile your own version, the library can be built by
-running `mvn clean verify`. The output JAR will be in the `target/` directory.
-*(Note: this requires Maven be installed)*
-
-
-
 License
 =======
 
+    Copyright 2017 Tailored Media GmbH
     Copyright 2012 Jake Wharton
     Copyright 2011 The Android Open Source Project
 
@@ -87,7 +65,3 @@ License
     See the License for the specific language governing permissions and
     limitations under the License.
 
-
-
- [jar]: https://search.maven.org/remote_content?g=com.jakewharton&a=disklrucache&v=LATEST
- [snap]: https://oss.sonatype.org/content/repositories/snapshots/

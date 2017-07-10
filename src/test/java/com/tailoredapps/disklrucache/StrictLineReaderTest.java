@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.jakewharton.disklrucache;
+package com.tailoredapps.disklrucache;
 
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;

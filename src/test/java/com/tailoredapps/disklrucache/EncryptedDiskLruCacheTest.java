@@ -12,18 +12,16 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * ------
+ *
+ * FILE MODIFIED 2017 Tailored Media GmbH
  */
 
-package com.jakewharton.disklrucache;
+package com.tailoredapps.disklrucache;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.InputStream;
-import java.io.Reader;
-import java.io.StringWriter;
-import java.io.Writer;
+import java.io.*;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -34,30 +32,42 @@ import org.junit.Test;
 import org.junit.Rule;
 import org.junit.rules.TemporaryFolder;
 
-import static com.jakewharton.disklrucache.DiskLruCache.JOURNAL_FILE;
-import static com.jakewharton.disklrucache.DiskLruCache.JOURNAL_FILE_BACKUP;
-import static com.jakewharton.disklrucache.DiskLruCache.MAGIC;
-import static com.jakewharton.disklrucache.DiskLruCache.VERSION_1;
+import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
+import javax.crypto.NullCipher;
+
+import static com.sun.xml.internal.ws.dump.LoggingDumpTube.Position.After;
+import static com.tailoredapps.disklrucache.EncryptedDiskLruCache.*;
 import static org.fest.assertions.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
 
-public final class DiskLruCacheTest {
+public final class EncryptedDiskLruCacheTest {
   private final int appVersion = 100;
   private File cacheDir;
   private File journalFile;
   private File journalBkpFile;
-  private DiskLruCache cache;
+  private EncryptedDiskLruCache cache;
+  private final EncryptedFileStreamProvider provider = new EncryptedFileStreamProvider() {
+        public CipherInputStream getInputStream(File file) throws FileNotFoundException, GeneralSecurityException {
+          return new CipherInputStream(new FileInputStream(file), new NullCipher());
+        }
+
+        public CipherOutputStream getOutputStream(File file) throws FileNotFoundException, GeneralSecurityException {
+          return new CipherOutputStream(new FileOutputStream(file), new NullCipher());
+        }
+      };
 
   @Rule public TemporaryFolder tempDir = new TemporaryFolder();
 
   @Before public void setUp() throws Exception {
-    cacheDir = tempDir.newFolder("DiskLruCacheTest");
+    cacheDir = tempDir.newFolder("EncryptedDiskLruCacheTest");
     journalFile = new File(cacheDir, JOURNAL_FILE);
     journalBkpFile = new File(cacheDir, JOURNAL_FILE_BACKUP);
     for (File file : cacheDir.listFiles()) {
       file.delete();
     }
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
   }
 
   @After public void tearDown() throws Exception {
@@ -136,7 +146,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void writeAndReadEntry() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(0, "ABC");
     creator.set(1, "DE");
     assertThat(creator.getString(0)).isNull();
@@ -145,7 +155,7 @@ public final class DiskLruCacheTest {
     assertThat(creator.newInputStream(1)).isNull();
     creator.commit();
 
-    DiskLruCache.Snapshot snapshot = cache.get("k1");
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("k1");
     assertThat(snapshot.getString(0)).isEqualTo("ABC");
     assertThat(snapshot.getLength(0)).isEqualTo(3);
     assertThat(snapshot.getString(1)).isEqualTo("DE");
@@ -153,14 +163,14 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void readAndWriteEntryAcrossCacheOpenAndClose() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(0, "A");
     creator.set(1, "B");
     creator.commit();
     cache.close();
 
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
-    DiskLruCache.Snapshot snapshot = cache.get("k1");
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("k1");
     assertThat(snapshot.getString(0)).isEqualTo("A");
     assertThat(snapshot.getLength(0)).isEqualTo(1);
     assertThat(snapshot.getString(1)).isEqualTo("B");
@@ -169,14 +179,14 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void readAndWriteEntryWithoutProperClose() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(0, "A");
     creator.set(1, "B");
     creator.commit();
 
     // Simulate a dirty close of 'cache' by opening the cache directory again.
-    DiskLruCache cache2 = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
-    DiskLruCache.Snapshot snapshot = cache2.get("k1");
+    EncryptedDiskLruCache cache2 = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
+    EncryptedDiskLruCache.Snapshot snapshot = cache2.get("k1");
     assertThat(snapshot.getString(0)).isEqualTo("A");
     assertThat(snapshot.getLength(0)).isEqualTo(1);
     assertThat(snapshot.getString(1)).isEqualTo("B");
@@ -186,7 +196,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void journalWithEditAndPublish() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     assertJournalEquals("DIRTY k1"); // DIRTY must always be flushed.
     creator.set(0, "AB");
     creator.set(1, "C");
@@ -196,7 +206,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void revertedNewFileIsRemoveInJournal() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     assertJournalEquals("DIRTY k1"); // DIRTY must always be flushed.
     creator.set(0, "AB");
     creator.set(1, "C");
@@ -212,7 +222,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void journalDoesNotIncludeReadOfYetUnpublishedValue() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     assertThat(cache.get("k1")).isNull();
     creator.set(0, "A");
     creator.set(1, "BC");
@@ -222,22 +232,22 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void journalWithEditAndPublishAndRead() throws Exception {
-    DiskLruCache.Editor k1Creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor k1Creator = cache.edit("k1");
     k1Creator.set(0, "AB");
     k1Creator.set(1, "C");
     k1Creator.commit();
-    DiskLruCache.Editor k2Creator = cache.edit("k2");
+    EncryptedDiskLruCache.Editor k2Creator = cache.edit("k2");
     k2Creator.set(0, "DEF");
     k2Creator.set(1, "G");
     k2Creator.commit();
-    DiskLruCache.Snapshot k1Snapshot = cache.get("k1");
+    EncryptedDiskLruCache.Snapshot k1Snapshot = cache.get("k1");
     k1Snapshot.close();
     cache.close();
     assertJournalEquals("DIRTY k1", "CLEAN k1 2 1", "DIRTY k2", "CLEAN k2 3 1", "READ k1");
   }
 
   @Test public void cannotOperateOnEditAfterPublish() throws Exception {
-    DiskLruCache.Editor editor = cache.edit("k1");
+    EncryptedDiskLruCache.Editor editor = cache.edit("k1");
     editor.set(0, "A");
     editor.set(1, "B");
     editor.commit();
@@ -245,7 +255,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void cannotOperateOnEditAfterRevert() throws Exception {
-    DiskLruCache.Editor editor = cache.edit("k1");
+    EncryptedDiskLruCache.Editor editor = cache.edit("k1");
     editor.set(0, "A");
     editor.set(1, "B");
     editor.abort();
@@ -253,7 +263,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void explicitRemoveAppliedToDiskImmediately() throws Exception {
-    DiskLruCache.Editor editor = cache.edit("k1");
+    EncryptedDiskLruCache.Editor editor = cache.edit("k1");
     editor.set(0, "ABC");
     editor.set(1, "B");
     editor.commit();
@@ -268,22 +278,22 @@ public final class DiskLruCacheTest {
    * This means that two reads of the same key can see different data.
    */
   @Test public void readAndWriteOverlapsMaintainConsistency() throws Exception {
-    DiskLruCache.Editor v1Creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor v1Creator = cache.edit("k1");
     v1Creator.set(0, "AAaa");
     v1Creator.set(1, "BBbb");
     v1Creator.commit();
 
-    DiskLruCache.Snapshot snapshot1 = cache.get("k1");
+    EncryptedDiskLruCache.Snapshot snapshot1 = cache.get("k1");
     InputStream inV1 = snapshot1.getInputStream(0);
     assertThat(inV1.read()).isEqualTo('A');
     assertThat(inV1.read()).isEqualTo('A');
 
-    DiskLruCache.Editor v1Updater = cache.edit("k1");
+    EncryptedDiskLruCache.Editor v1Updater = cache.edit("k1");
     v1Updater.set(0, "CCcc");
     v1Updater.set(1, "DDdd");
     v1Updater.commit();
 
-    DiskLruCache.Snapshot snapshot2 = cache.get("k1");
+    EncryptedDiskLruCache.Snapshot snapshot2 = cache.get("k1");
     assertThat(snapshot2.getString(0)).isEqualTo("CCcc");
     assertThat(snapshot2.getLength(0)).isEqualTo(4);
     assertThat(snapshot2.getString(1)).isEqualTo("DDdd");
@@ -308,7 +318,7 @@ public final class DiskLruCacheTest {
     writeFile(dirtyFile0, "C");
     writeFile(dirtyFile1, "D");
     createJournal("CLEAN k1 1 1", "DIRTY   k1");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertThat(cleanFile0.exists()).isFalse();
     assertThat(cleanFile1.exists()).isFalse();
     assertThat(dirtyFile0.exists()).isFalse();
@@ -320,7 +330,7 @@ public final class DiskLruCacheTest {
     cache.close();
     generateSomeGarbageFiles();
     createJournalWithHeader(MAGIC, "0", "100", "2", "");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertGarbageFilesAllDeleted();
   }
 
@@ -328,7 +338,7 @@ public final class DiskLruCacheTest {
     cache.close();
     generateSomeGarbageFiles();
     createJournalWithHeader(MAGIC, "1", "101", "2", "");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertGarbageFilesAllDeleted();
   }
 
@@ -336,7 +346,7 @@ public final class DiskLruCacheTest {
     cache.close();
     generateSomeGarbageFiles();
     createJournalWithHeader(MAGIC, "1", "100", "1", "");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertGarbageFilesAllDeleted();
   }
 
@@ -344,7 +354,7 @@ public final class DiskLruCacheTest {
     cache.close();
     generateSomeGarbageFiles();
     createJournalWithHeader(MAGIC, "1", "100", "2", "x");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertGarbageFilesAllDeleted();
   }
 
@@ -352,7 +362,7 @@ public final class DiskLruCacheTest {
     cache.close();
     generateSomeGarbageFiles();
     createJournal("CLEAN k1 1 1", "BOGUS");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertGarbageFilesAllDeleted();
     assertThat(cache.get("k1")).isNull();
   }
@@ -361,7 +371,7 @@ public final class DiskLruCacheTest {
     cache.close();
     generateSomeGarbageFiles();
     createJournal("CLEAN k1 0000x001 1");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertGarbageFilesAllDeleted();
     assertThat(cache.get("k1")).isNull();
   }
@@ -373,13 +383,13 @@ public final class DiskLruCacheTest {
     Writer writer = new FileWriter(journalFile);
     writer.write(MAGIC + "\n" + VERSION_1 + "\n100\n2\n\nCLEAN k1 1 1"); // no trailing newline
     writer.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertThat(cache.get("k1")).isNull();
 
     // The journal is not corrupt when editing after a truncated line.
     set("k1", "C", "D");
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertValue("k1", "C", "D");
   }
 
@@ -387,7 +397,7 @@ public final class DiskLruCacheTest {
     cache.close();
     generateSomeGarbageFiles();
     createJournal("CLEAN k1 1 1 1");
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
     assertGarbageFilesAllDeleted();
     assertThat(cache.get("k1")).isNull();
   }
@@ -425,7 +435,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void createNewEntryWithTooFewValuesFails() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(1, "A");
     try {
       creator.commit();
@@ -439,14 +449,14 @@ public final class DiskLruCacheTest {
     assertThat(getDirtyFile("k1", 1).exists()).isFalse();
     assertThat(cache.get("k1")).isNull();
 
-    DiskLruCache.Editor creator2 = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator2 = cache.edit("k1");
     creator2.set(0, "B");
     creator2.set(1, "C");
     creator2.commit();
   }
 
   @Test public void revertWithTooFewValues() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(1, "A");
     creator.abort();
     assertThat(getCleanFile("k1", 0).exists()).isFalse();
@@ -457,16 +467,16 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void updateExistingEntryWithTooFewValuesReusesPreviousValues() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(0, "A");
     creator.set(1, "B");
     creator.commit();
 
-    DiskLruCache.Editor updater = cache.edit("k1");
+    EncryptedDiskLruCache.Editor updater = cache.edit("k1");
     updater.set(0, "C");
     updater.commit();
 
-    DiskLruCache.Snapshot snapshot = cache.get("k1");
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("k1");
     assertThat(snapshot.getString(0)).isEqualTo("C");
     assertThat(snapshot.getLength(0)).isEqualTo(1);
     assertThat(snapshot.getString(1)).isEqualTo("B");
@@ -476,7 +486,7 @@ public final class DiskLruCacheTest {
 
   @Test public void growMaxSize() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
     set("a", "a", "aaa"); // size 4
     set("b", "bb", "bbbb"); // size 6
     cache.setMaxSize(20);
@@ -486,7 +496,7 @@ public final class DiskLruCacheTest {
 
   @Test public void shrinkMaxSizeEvicts() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 20);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 20);
     set("a", "a", "aaa"); // size 4
     set("b", "bb", "bbbb"); // size 6
     set("c", "c", "c"); // size 12
@@ -497,7 +507,7 @@ public final class DiskLruCacheTest {
 
   @Test public void evictOnInsert() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
 
     set("a", "a", "aaa"); // size 4
     set("b", "bb", "bbbb"); // size 6
@@ -533,7 +543,7 @@ public final class DiskLruCacheTest {
 
   @Test public void evictOnUpdate() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
 
     set("a", "a", "aa"); // size 3
     set("b", "b", "bb"); // size 3
@@ -551,7 +561,7 @@ public final class DiskLruCacheTest {
 
   @Test public void evictionHonorsLruFromCurrentSession() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
     set("a", "a", "a");
     set("b", "b", "b");
     set("c", "c", "c");
@@ -583,7 +593,7 @@ public final class DiskLruCacheTest {
     cache.get("b").close(); // 'B' is now least recently used.
     assertThat(cache.size()).isEqualTo(12);
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
 
     set("g", "g", "g");
     cache.flush();
@@ -599,7 +609,7 @@ public final class DiskLruCacheTest {
 
   @Test public void cacheSingleEntryOfSizeGreaterThanMaxSize() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
     set("a", "aaaaa", "aaaaaa"); // size=11
     cache.flush();
     assertAbsent("a");
@@ -607,7 +617,7 @@ public final class DiskLruCacheTest {
 
   @Test public void cacheSingleValueOfSizeGreaterThanMaxSize() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
     set("a", "aaaaaaaaaaa", "a"); // size=12
     cache.flush();
     assertAbsent("a");
@@ -615,7 +625,7 @@ public final class DiskLruCacheTest {
 
   @Test public void constructorDoesNotAllowZeroCacheSize() throws Exception {
     try {
-      DiskLruCache.open(cacheDir, appVersion, 2, 0);
+      EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 0);
       fail();
     } catch (IllegalArgumentException expected) {
     }
@@ -623,7 +633,7 @@ public final class DiskLruCacheTest {
 
   @Test public void constructorDoesNotAllowZeroValuesPerEntry() throws Exception {
     try {
-      DiskLruCache.open(cacheDir, appVersion, 0, 10);
+      EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 0, 10);
       fail();
     } catch (IllegalArgumentException expected) {
     }
@@ -635,7 +645,7 @@ public final class DiskLruCacheTest {
 
   @Test public void readingTheSameStreamMultipleTimes() throws Exception {
     set("a", "a", "b");
-    DiskLruCache.Snapshot snapshot = cache.get("a");
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("a");
     assertThat(snapshot.getInputStream(0)).isSameAs(snapshot.getInputStream(0));
     snapshot.close();
   }
@@ -678,7 +688,7 @@ public final class DiskLruCacheTest {
     assertValue("b", "b", "b");
   }
 
-  /** @see <a href="https://github.com/JakeWharton/DiskLruCache/issues/28">Issue #28</a> */
+  /** @see <a href="https://github.com/JakeWharton/EncryptedDiskLruCache/issues/28">Issue #28</a> */
   @Test public void rebuildJournalOnRepeatedReadsWithOpenAndClose() throws Exception {
     set("a", "a", "a");
     set("b", "b", "b");
@@ -688,7 +698,7 @@ public final class DiskLruCacheTest {
       assertValue("a", "a", "a");
       assertValue("b", "b", "b");
       cache.close();
-      cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+      cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
       if (journalLength < lastJournalLength) {
         System.out
             .printf("Journal compacted from %s bytes to %s bytes\n", lastJournalLength,
@@ -699,7 +709,7 @@ public final class DiskLruCacheTest {
     }
   }
 
-  /** @see <a href="https://github.com/JakeWharton/DiskLruCache/issues/28">Issue #28</a> */
+  /** @see <a href="https://github.com/JakeWharton/EncryptedDiskLruCache/issues/28">Issue #28</a> */
   @Test public void rebuildJournalOnRepeatedEditsWithOpenAndClose() throws Exception {
     long lastJournalLength = 0;
     while (true) {
@@ -707,7 +717,7 @@ public final class DiskLruCacheTest {
       set("a", "a", "a");
       set("b", "b", "b");
       cache.close();
-      cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+      cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
       if (journalLength < lastJournalLength) {
         System.out
             .printf("Journal compacted from %s bytes to %s bytes\n", lastJournalLength,
@@ -719,7 +729,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void restoreBackupFile() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(0, "ABC");
     creator.set(1, "DE");
     creator.commit();
@@ -728,9 +738,9 @@ public final class DiskLruCacheTest {
     assertThat(journalFile.renameTo(journalBkpFile)).isTrue();
     assertThat(journalFile.exists()).isFalse();
 
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
 
-    DiskLruCache.Snapshot snapshot = cache.get("k1");
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("k1");
     assertThat(snapshot.getString(0)).isEqualTo("ABC");
     assertThat(snapshot.getLength(0)).isEqualTo(3);
     assertThat(snapshot.getString(1)).isEqualTo("DE");
@@ -741,7 +751,7 @@ public final class DiskLruCacheTest {
   }
 
   @Test public void journalFileIsPreferredOverBackupFile() throws Exception {
-    DiskLruCache.Editor creator = cache.edit("k1");
+    EncryptedDiskLruCache.Editor creator = cache.edit("k1");
     creator.set(0, "ABC");
     creator.set(1, "DE");
     creator.commit();
@@ -758,15 +768,15 @@ public final class DiskLruCacheTest {
     assertThat(journalFile.exists()).isTrue();
     assertThat(journalBkpFile.exists()).isTrue();
 
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, Integer.MAX_VALUE);
 
-    DiskLruCache.Snapshot snapshotA = cache.get("k1");
+    EncryptedDiskLruCache.Snapshot snapshotA = cache.get("k1");
     assertThat(snapshotA.getString(0)).isEqualTo("ABC");
     assertThat(snapshotA.getLength(0)).isEqualTo(3);
     assertThat(snapshotA.getString(1)).isEqualTo("DE");
     assertThat(snapshotA.getLength(1)).isEqualTo(2);
 
-    DiskLruCache.Snapshot snapshotB = cache.get("k2");
+    EncryptedDiskLruCache.Snapshot snapshotB = cache.get("k2");
     assertThat(snapshotB.getString(0)).isEqualTo("F");
     assertThat(snapshotB.getLength(0)).isEqualTo(1);
     assertThat(snapshotB.getString(1)).isEqualTo("GH");
@@ -779,7 +789,7 @@ public final class DiskLruCacheTest {
   @Test public void openCreatesDirectoryIfNecessary() throws Exception {
     cache.close();
     File dir = tempDir.newFolder("testOpenCreatesDirectoryIfNecessary");
-    cache = DiskLruCache.open(dir, appVersion, 2, Integer.MAX_VALUE);
+    cache = EncryptedDiskLruCache.open(dir, provider, appVersion, 2, Integer.MAX_VALUE);
     set("a", "a", "a");
     assertThat(new File(dir, "a.0").exists()).isTrue();
     assertThat(new File(dir, "a.1").exists()).isTrue();
@@ -794,8 +804,8 @@ public final class DiskLruCacheTest {
 
   @Test public void editSameVersion() throws Exception {
     set("a", "a", "a");
-    DiskLruCache.Snapshot snapshot = cache.get("a");
-    DiskLruCache.Editor editor = snapshot.edit();
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("a");
+    EncryptedDiskLruCache.Editor editor = snapshot.edit();
     editor.set(1, "a2");
     editor.commit();
     assertValue("a", "a", "a2");
@@ -803,11 +813,11 @@ public final class DiskLruCacheTest {
 
   @Test public void editSnapshotAfterChangeAborted() throws Exception {
     set("a", "a", "a");
-    DiskLruCache.Snapshot snapshot = cache.get("a");
-    DiskLruCache.Editor toAbort = snapshot.edit();
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("a");
+    EncryptedDiskLruCache.Editor toAbort = snapshot.edit();
     toAbort.set(0, "b");
     toAbort.abort();
-    DiskLruCache.Editor editor = snapshot.edit();
+    EncryptedDiskLruCache.Editor editor = snapshot.edit();
     editor.set(1, "a2");
     editor.commit();
     assertValue("a", "a", "a2");
@@ -815,8 +825,8 @@ public final class DiskLruCacheTest {
 
   @Test public void editSnapshotAfterChangeCommitted() throws Exception {
     set("a", "a", "a");
-    DiskLruCache.Snapshot snapshot = cache.get("a");
-    DiskLruCache.Editor toAbort = snapshot.edit();
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("a");
+    EncryptedDiskLruCache.Editor toAbort = snapshot.edit();
     toAbort.set(0, "b");
     toAbort.commit();
     assertThat(snapshot.edit()).isNull();
@@ -824,9 +834,9 @@ public final class DiskLruCacheTest {
 
   @Test public void editSinceEvicted() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
     set("a", "aa", "aaa"); // size 5
-    DiskLruCache.Snapshot snapshot = cache.get("a");
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("a");
     set("b", "bb", "bbb"); // size 5
     set("c", "cc", "ccc"); // size 5; will evict 'A'
     cache.flush();
@@ -835,9 +845,9 @@ public final class DiskLruCacheTest {
 
   @Test public void editSinceEvictedAndRecreated() throws Exception {
     cache.close();
-    cache = DiskLruCache.open(cacheDir, appVersion, 2, 10);
+    cache = EncryptedDiskLruCache.open(cacheDir, provider, appVersion, 2, 10);
     set("a", "aa", "aaa"); // size 5
-    DiskLruCache.Snapshot snapshot = cache.get("a");
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get("a");
     set("b", "bb", "bbb"); // size 5
     set("c", "cc", "ccc"); // size 5; will evict 'A'
     set("a", "a", "aaaa"); // size 5; will evict 'B'
@@ -845,17 +855,17 @@ public final class DiskLruCacheTest {
     assertThat(snapshot.edit()).isNull();
   }
 
-  /** @see <a href="https://github.com/JakeWharton/DiskLruCache/issues/2">Issue #2</a> */
+  /** @see <a href="https://github.com/JakeWharton/EncryptedDiskLruCache/issues/2">Issue #2</a> */
   @Test public void aggressiveClearingHandlesWrite() throws Exception {
     FileUtils.deleteDirectory(cacheDir);
     set("a", "a", "a");
     assertValue("a", "a", "a");
   }
 
-  /** @see <a href="https://github.com/JakeWharton/DiskLruCache/issues/2">Issue #2</a> */
+  /** @see <a href="https://github.com/JakeWharton/EncryptedDiskLruCache/issues/2">Issue #2</a> */
   @Test public void aggressiveClearingHandlesEdit() throws Exception {
     set("a", "a", "a");
-    DiskLruCache.Editor a = cache.get("a").edit();
+    EncryptedDiskLruCache.Editor a = cache.get("a").edit();
     FileUtils.deleteDirectory(cacheDir);
     a.set(1, "a2");
     a.commit();
@@ -867,11 +877,11 @@ public final class DiskLruCacheTest {
     cache.remove("a");
   }
 
-  /** @see <a href="https://github.com/JakeWharton/DiskLruCache/issues/2">Issue #2</a> */
+  /** @see <a href="https://github.com/JakeWharton/EncryptedDiskLruCache/issues/2">Issue #2</a> */
   @Test public void aggressiveClearingHandlesPartialEdit() throws Exception {
     set("a", "a", "a");
     set("b", "b", "b");
-    DiskLruCache.Editor a = cache.get("a").edit();
+    EncryptedDiskLruCache.Editor a = cache.get("a").edit();
     a.set(0, "a1");
     FileUtils.deleteDirectory(cacheDir);
     a.set(1, "a2");
@@ -879,7 +889,7 @@ public final class DiskLruCacheTest {
     assertThat(cache.get("a")).isNull();
   }
 
-  /** @see <a href="https://github.com/JakeWharton/DiskLruCache/issues/2">Issue #2</a> */
+  /** @see <a href="https://github.com/JakeWharton/EncryptedDiskLruCache/issues/2">Issue #2</a> */
   @Test public void aggressiveClearingHandlesRead() throws Exception {
     FileUtils.deleteDirectory(cacheDir);
     assertThat(cache.get("a")).isNull();
@@ -952,7 +962,7 @@ public final class DiskLruCacheTest {
     writer.close();
   }
 
-  private static void assertInoperable(DiskLruCache.Editor editor) throws Exception {
+  private static void assertInoperable(EncryptedDiskLruCache.Editor editor) throws Exception {
     try {
       editor.getString(0);
       fail();
@@ -1009,14 +1019,14 @@ public final class DiskLruCacheTest {
   }
 
   private void set(String key, String value0, String value1) throws Exception {
-    DiskLruCache.Editor editor = cache.edit(key);
+    EncryptedDiskLruCache.Editor editor = cache.edit(key);
     editor.set(0, value0);
     editor.set(1, value1);
     editor.commit();
   }
 
   private void assertAbsent(String key) throws Exception {
-    DiskLruCache.Snapshot snapshot = cache.get(key);
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get(key);
     if (snapshot != null) {
       snapshot.close();
       fail();
@@ -1028,7 +1038,7 @@ public final class DiskLruCacheTest {
   }
 
   private void assertValue(String key, String value0, String value1) throws Exception {
-    DiskLruCache.Snapshot snapshot = cache.get(key);
+    EncryptedDiskLruCache.Snapshot snapshot = cache.get(key);
     assertThat(snapshot.getString(0)).isEqualTo(value0);
     assertThat(snapshot.getLength(0)).isEqualTo(value0.length());
     assertThat(snapshot.getString(1)).isEqualTo(value1);
